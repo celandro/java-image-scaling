@@ -32,6 +32,9 @@ public abstract class AdvancedResizeOp implements BufferedImageOp {
 		UnsharpenMask(float factor) {
 			this.factor = factor;
 		}
+		public float getFactor() {
+		    return factor;
+		}
 	}
 	private List<ProgressListener> listeners = new ArrayList<ProgressListener>();
 
@@ -71,15 +74,20 @@ public abstract class AdvancedResizeOp implements BufferedImageOp {
 		BufferedImage bufferedImage = doFilter(src, dest, dstWidth, dstHeight);
 
 		if (unsharpenMask!= UnsharpenMask.None){
-			UnsharpFilter unsharpFilter= new UnsharpFilter();
-			unsharpFilter.setRadius(2f);
-			unsharpFilter.setAmount(unsharpenMask.factor);
-			unsharpFilter.setThreshold(10);
+			UnsharpFilter unsharpFilter = createUnsharpFilter();
 			return  unsharpFilter.filter(bufferedImage, null);
 		}
 
 		return bufferedImage;
 	}
+
+    public UnsharpFilter createUnsharpFilter() {
+        UnsharpFilter unsharpFilter= new UnsharpFilter();
+        unsharpFilter.setRadius(2f);
+        unsharpFilter.setAmount(unsharpenMask.factor);
+        unsharpFilter.setThreshold(10);
+        return unsharpFilter;
+    }
 
 	protected abstract BufferedImage doFilter(BufferedImage src, BufferedImage dest, int dstWidth, int dstHeight);
 

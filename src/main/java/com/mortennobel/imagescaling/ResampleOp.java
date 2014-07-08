@@ -8,7 +8,14 @@ package com.mortennobel.imagescaling;
 
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBuffer;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import com.jhlabs.image.UnsharpFilter;
+
 
 /**
  * Based on work from Java Image Util ( http://schmidt.devlib.org/jiu/ )
@@ -65,19 +72,29 @@ public class ResampleOp extends AdvancedResizeOp
 	private int processedItems;
 	private float totalItems;
 
-	private int numberOfThreads = Runtime.getRuntime().availableProcessors();
+	private int numberOfThreads;
 
 	private AtomicInteger multipleInvocationLock = new AtomicInteger();
 
 	private ResampleFilter filter = ResampleFilters.getLanczos3Filter();
 
+	private ExecutorService threadPool;
 
-	public ResampleOp(int destWidth, int destHeight) {
-		this(DimensionConstrain.createAbsolutionDimension(destWidth, destHeight));
+    public ResampleOp(int destWidth, int destHeight) {
+        this(DimensionConstrain.createAbsolutionDimension(destWidth, destHeight));
+    }
+    public ResampleOp(DimensionConstrain dimensionConstrain) {
+        // Simple executor that will reuse threads. 
+        this(dimensionConstrain, Executors.newCachedThreadPool(), Runtime.getRuntime().availableProcessors());
+    }
+	public ResampleOp(int destWidth, int destHeight, ExecutorService threadPool, int numberOfThreads) {
+		this(DimensionConstrain.createAbsolutionDimension(destWidth, destHeight), threadPool, numberOfThreads);
 	}
 
-	public ResampleOp(DimensionConstrain dimensionConstrain) {
+	public ResampleOp(DimensionConstrain dimensionConstrain, ExecutorService threadPool, int numberOfThreads) {
 		super(dimensionConstrain);
+		this.threadPool = threadPool;
+		this.numberOfThreads = numberOfThreads;
 	}
 
 	public ResampleFilter getFilter() {
@@ -95,7 +112,14 @@ public class ResampleOp extends AdvancedResizeOp
 	public void setNumberOfThreads(int numberOfThreads) {
 		this.numberOfThreads = numberOfThreads;
 	}
-
+    public UnsharpFilter createUnsharpFilter() {
+        UnsharpFilter unsharpFilter= new MultiThreadedUnsharpFilter(threadPool, numberOfThreads);
+//        UnsharpFilter unsharpFilter= new UnsharpFilter();
+        unsharpFilter.setRadius(2f);
+        unsharpFilter.setAmount(getUnsharpenMask().getFactor());
+        unsharpFilter.setThreshold(10);
+        return unsharpFilter;
+    }
 	public BufferedImage doFilter(BufferedImage srcImg, BufferedImage dest, int dstWidth, int dstHeight) {
 		this.dstWidth = dstWidth;
 		this.dstHeight = dstHeight;
@@ -129,35 +153,35 @@ public class ResampleOp extends AdvancedResizeOp
 
         final BufferedImage scrImgCopy = srcImg;
         final byte[][] workPixelsCopy = workPixels;
-        Thread[] threads = new Thread[numberOfThreads-1];
-        for (int i=1;i<numberOfThreads;i++){
+        Future<?>[] results = new Future<?>[numberOfThreads];
+        for (int i=0;i<numberOfThreads;i++){
             final int finalI = i;
-            threads[i-1] = new Thread(new Runnable(){
-                public void run(){
-                    horizontallyFromSrcToWork(scrImgCopy, workPixelsCopy,finalI,numberOfThreads);
-                }
-            });
-            threads[i-1].start();
+            results[i] = threadPool.submit(
+                    new Runnable(){
+                        public void run(){
+                            horizontallyFromSrcToWork(scrImgCopy, workPixelsCopy,finalI,numberOfThreads);
+                        }
+                    });
         }
-        horizontallyFromSrcToWork(scrImgCopy, workPixelsCopy,0,numberOfThreads);
-        waitForAllThreads(threads);
+        waitForAllThreads(results);
+        
 
         byte[] outPixels = new byte[dstWidth*dstHeight*nrChannels];
         // --------------------------------------------------
 		// Apply filter to sample vertically from Work to Dst
 		// --------------------------------------------------
         final byte[] outPixelsCopy = outPixels;
-        for (int i=1;i<numberOfThreads;i++){
+        for (int i=0;i<numberOfThreads;i++){
             final int finalI = i;
-            threads[i-1] = new Thread(new Runnable(){
-                public void run(){
-					verticalFromWorkToDst(workPixelsCopy, outPixelsCopy, finalI,numberOfThreads);
-                }
-            });
-            threads[i-1].start();
+            results[i] = threadPool.submit(
+                    new Runnable(){
+                        public void run(){
+                            verticalFromWorkToDst(workPixelsCopy, outPixelsCopy, finalI,numberOfThreads);
+                        }
+                    });
         }
-        verticalFromWorkToDst(workPixelsCopy, outPixelsCopy, 0,numberOfThreads);
-        waitForAllThreads(threads);
+        waitForAllThreads(results);
+
 
         //noinspection UnusedAssignment
         workPixels = null; // free memory
@@ -180,13 +204,16 @@ public class ResampleOp extends AdvancedResizeOp
 		return out;
     }
 
-    private void waitForAllThreads(Thread[] threads) {
+    private void waitForAllThreads(Future<?>[] results) {
         try {
-            for (Thread t:threads){
-                t.join(Long.MAX_VALUE);
+            for (Future<?> f:results){
+                f.get();
             }
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        } catch (ExecutionException e) {
+            e.printStackTrace();
             throw new RuntimeException(e);
         }
     }
